@@ -9,7 +9,6 @@ import hashlib
 import os
 import concurrent.futures
 
-from save_app_profile import *
 
 load_dotenv()
 
