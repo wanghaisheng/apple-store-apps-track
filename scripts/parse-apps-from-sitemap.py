@@ -192,3 +192,21 @@ def process_sitemaps_and_save_profiles():
 
 # Start the process
 process_sitemaps_and_save_profiles()
+
+
+def batch_process_initial_app_profiles(batch):
+    """
+    批量处理初始app profile数据（示例实现：打印或保存到本地文件，可根据实际需求扩展）。
+    """
+    # 这里只做简单打印，实际可扩展为写入数据库、文件等
+    for app in batch:
+        print(f"处理app: {app['url']} | 更新时间: {app['lastmodify']}")
+
+
+def batch_process_in_chunks(data_list, process_function, chunk_size=100):
+    """
+    将数据分块并批量处理。
+    """
+    for i in range(0, len(data_list), chunk_size):
+        chunk = data_list[i:i+chunk_size]
+        process_function(chunk)
