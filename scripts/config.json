@@ -1,7 +1,7 @@
 {
-  "baseUrl": "https://websimstarter.borninsea.com",
+  "baseUrl": "https://appleappdataset.borninsea.com",
   "defaultLang": "en",
-  "email":"support@websimstarter.borninsea.com",
+  "email":"support@appleappdataset.borninsea.com",
   "apptype":"app",
   "robots": {
     "allowedBots": [

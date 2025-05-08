@@ -180,4 +180,4 @@ Allow: /zh
 Allow: /fr
 Allow: /es
 Allow: /de
-Sitemap: https://websimstarter.borninsea.com/sitemap.xml
+Sitemap: https://appleappdataset.borninsea.com/sitemap.xml

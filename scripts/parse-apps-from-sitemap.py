@@ -24,7 +24,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("app_profiles.log"),
+        logging.FileHandler("data/app_profiles.log"),
         logging.StreamHandler()
     ]
 )
@@ -70,9 +70,10 @@ def fetch_and_parse_sitemap(url):
         logging.error(f"XML parsing error for sitemap at URL {url}: {e}")
         return []
 
-def fetch_and_parse_gzip_stream(url, process_function=None, batch_size=100, max_workers=4):
+def fetch_and_parse_gzip_stream(url):
     """
-    流式解析GZipped XML文件，逐个处理<url>节点，支持多线程/多进程并行处理和分批存储。
+    Efficiently stream and parse a GZipped XML file, extracting all <loc> URLs.
+    Returns a list of URLs. Designed for very large XML files (100,000+ rows).
     """
     try:
         logging.debug(f"Fetching GZipped sitemap from URL: {url}")
@@ -80,34 +81,15 @@ def fetch_and_parse_gzip_stream(url, process_function=None, batch_size=100, max_
         response.raise_for_status()
         with gzip.GzipFile(fileobj=BytesIO(response.content)) as f:
             context = ET.iterparse(f, events=("end",))
-            batch = []
-            results = []
-            # 线程池/进程池
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for event, elem in context:
-                    if elem.tag.endswith('url'):
-                        loc = elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}loc')
-                        lastmod = elem.find('{http://www.sitemaps.org/schemas/sitemap/0.9}lastmod')
-                        if loc is not None and lastmod is not None:
-                            batch.append({"url": loc.text, "lastmodify": lastmod.text})
-                        if len(batch) >= batch_size:
-                            if process_function:
-                                # 异步提交批处理任务
-                                futures.append(executor.submit(process_function, batch.copy()))
-                            results.extend(batch)
-                            batch.clear()
-                    elem.clear()
-                # 处理剩余未满batch的部分
-                if batch:
-                    if process_function:
-                        futures.append(executor.submit(process_function, batch.copy()))
-                    results.extend(batch)
-                # 等待所有任务完成
-                for future in futures:
-                    future.result()
-            logging.debug(f"[stream] Extracted {len(results)} app data entries from GZipped sitemap.")
-            return results
+            loc_list = []
+            ns = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
+            for event, elem in context:
+                if elem.tag == ns + 'loc':
+                    if elem.text:
+                        loc_list.append(elem.text)
+                elem.clear()
+            logging.debug(f"[stream] Extracted {len(loc_list)} <loc> URLs from GZipped sitemap.")
+            return loc_list
     except requests.RequestException as e:
         logging.error(f"Failed to fetch or parse GZipped sitemap: {e} - URL: {url}")
         return []
@@ -128,6 +110,7 @@ def save_id_list_to_file(id_list, file_path):
     """
     保存id列表到文本文件，每行一个id。
     """
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, 'w', encoding='utf-8') as f:
         for app_id in id_list:
             f.write(f"{app_id}\n")
@@ -164,6 +147,70 @@ def analyze_and_report_new_apps(today_id_file, history_id_file, report_file):
     print(f"今日新增app数量: {len(new_ids)}，详情见: {report_file}")
 
 
+def fetch_and_parse_gzip_stream_with_lastmod(url, lastmod, existing_id_date_map, today):
+    """
+    解析GZipped XML文件，提取每个app的loc、lastmodified和添加日期。
+    """
+    import re
+    try:
+        logging.debug(f"Fetching GZipped sitemap from URL: {url}")
+        response = requests.get(url)
+        response.raise_for_status()
+        with gzip.GzipFile(fileobj=BytesIO(response.content)) as f:
+            context = ET.iterparse(f, events=("end",))
+            ns = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
+            app_details = []
+            for event, elem in context:
+                if elem.tag == ns + 'url':
+                    loc = elem.find(ns + 'loc')
+                    lastmod_elem = elem.find(ns + 'lastmod')
+                    loc_text = loc.text if loc is not None else None
+                    lastmod_text = lastmod_elem.text if lastmod_elem is not None else lastmod
+                    app_id = extract_app_id_from_url(loc_text) if loc_text else None
+                    if app_id:
+                        add_date = existing_id_date_map.get(app_id, today)
+                        app_details.append({
+                            'id': app_id,
+                            'loc': loc_text,
+                            'lastmodified': lastmod_text,
+                            'added_date': add_date
+                        })
+                elem.clear()
+            logging.debug(f"[stream] Extracted {len(app_details)} app details from GZipped sitemap.")
+            return app_details
+    except requests.RequestException as e:
+        logging.error(f"Failed to fetch or parse GZipped sitemap: {e} - URL: {url}")
+        return []
+    except ET.ParseError as e:
+        logging.error(f"XML parsing error for GZipped sitemap at URL {url}: {e}")
+        return []
+
+
+def load_app_details_json(file_path):
+    """
+    加载app详情JSON文件，返回id到详情的映射。
+    """
+    import json
+    if not os.path.exists(file_path):
+        return {}
+    with open(file_path, 'r', encoding='utf-8') as f:
+        try:
+            data = json.load(f)
+            return {item['id']: item for item in data}
+        except Exception:
+            return {}
+
+
+def save_app_details_json(app_details, file_path):
+    """
+    保存app详情到JSON文件。
+    """
+    import json
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(app_details, f, ensure_ascii=False, indent=2)
+
+
 def process_sitemaps_and_save_profiles():
     """
     Process the sitemaps and save app profiles.
@@ -171,36 +218,35 @@ def process_sitemaps_and_save_profiles():
     sitemap_url = "https://apps.apple.com/sitemaps_apps_index_app_1.xml"
     loc_urls = fetch_and_parse_sitemap(sitemap_url)
     print('gz count',len(loc_urls))
+    today = datetime.now().strftime('%Y-%m-%d')
+    data_dir = os.path.join(os.path.dirname(__file__), '../data')
+    os.makedirs(data_dir, exist_ok=True)
+    details_file = os.path.join(data_dir, f"app_details.json")
+    existing_id_detail_map = load_app_details_json(details_file)
+    existing_id_date_map = {k: v['added_date'] for k, v in existing_id_detail_map.items()}
+    all_app_details = list(existing_id_detail_map.values())
     for loc_url in loc_urls[:1]:
         print(f'processing sitemap:{loc_url}')
-        app_data_list = fetch_and_parse_gzip_stream(loc_url, process_function=lambda batch: batch_process_in_chunks(batch, process_function=batch_process_initial_app_profiles), batch_size=100, max_workers=4)
-        print('app_data_list count',len(app_data_list))
-        print(app_data_list[:2])
-        batch_process_in_chunks(app_data_list[:2], process_function=batch_process_initial_app_profiles)
-        # 新增：提取id并保存
-        today = datetime.now().strftime('%Y-%m-%d')
-        id_list = [extract_app_id_from_url(app['url']) for app in app_data_list if extract_app_id_from_url(app['url'])]
-        id_file = f"app_ids_{today}.txt"
+        lastmod = None
+        app_details = fetch_and_parse_gzip_stream_with_lastmod(loc_url, lastmod, existing_id_date_map, today)
+        print('app_details count',len(app_details))
+        id_set = set(existing_id_detail_map.keys())
+        for detail in app_details:
+            if detail['id'] not in id_set:
+                all_app_details.append(detail)
+                id_set.add(detail['id'])
+        save_app_details_json(all_app_details, details_file)
+        id_list = [detail['id'] for detail in app_details]
+        id_file = os.path.join(data_dir, f"app_ids_{today}.txt")
         save_id_list_to_file(id_list, id_file)
-        # 新增：对比历史id并输出今日新增app报告
-        history_id_file = "app_ids_history.txt"
-        report_file = f"new_apps_{today}.txt"
-        # // analyze_and_report_new_apps(id_file, history_id_file, report_file)
+        history_id_file = os.path.join(data_dir, "app_ids_history.txt")
+        report_file = os.path.join(data_dir, f"new_apps_{today}.txt")
+        # analyze_and_report_new_apps(id_file, history_id_file, report_file)
         # 可选：更新历史id文件（追加或合并）
-        all_ids = load_id_list_from_file(history_id_file).union(set(id_list))
+        all_ids = load_id_list_from_file(history_id_file).union(set(id_set))
         save_id_list_to_file(sorted(all_ids), history_id_file)
 
 # Start the process
-process_sitemaps_and_save_profiles()
-
-
-def batch_process_initial_app_profiles(batch):
-    """
-    批量处理初始app profile数据（示例实现：打印或保存到本地文件，可根据实际需求扩展）。
-    """
-    # 这里只做简单打印，实际可扩展为写入数据库、文件等
-    for app in batch:
-        print(f"处理app: {app['url']} | 更新时间: {app['lastmodify']}")
 
 
 def batch_process_in_chunks(data_list, process_function, chunk_size=100):
@@ -209,4 +255,5 @@ def batch_process_in_chunks(data_list, process_function, chunk_size=100):
     """
     for i in range(0, len(data_list), chunk_size):
         chunk = data_list[i:i+chunk_size]
-        process_function(chunk)
+        # process_function(chunk)
+process_sitemaps_and_save_profiles()
