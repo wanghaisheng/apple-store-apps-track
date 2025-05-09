@@ -21,7 +21,7 @@ CLOUDFLARE_BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLAR
 
 # Set up logging configuration
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("data/app_profiles.log"),
@@ -80,16 +80,21 @@ def fetch_and_parse_gzip_stream(url):
         response = requests.get(url)
         response.raise_for_status()
         with gzip.GzipFile(fileobj=BytesIO(response.content)) as f:
-            context = ET.iterparse(f, events=("end",))
-            loc_list = []
-            ns = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
-            for event, elem in context:
-                if elem.tag == ns + 'loc':
-                    if elem.text:
-                        loc_list.append(elem.text)
-                elem.clear()
-            logging.debug(f"[stream] Extracted {len(loc_list)} <loc> URLs from GZipped sitemap.")
-            return loc_list
+            file_content = f.read().decode('utf-8')
+                # Parse XML content from the decompressed file
+        tree = ET.ElementTree(ET.fromstring(file_content))
+        root = tree.getroot()
+        loc_tags = extract_links_from_xml(root, tag="loc")
+        lastmod_tags = extract_links_from_xml(root, tag="lastmod")
+        app_data_list = [
+            {"url": loc, "lastmodify": lastmod}
+            for loc, lastmod in zip(loc_tags, lastmod_tags)
+        ]
+        app_id = extract_app_id_from_url(loc_text) if loc_text else None
+
+
+
+        return app_data_list
     except requests.RequestException as e:
         logging.error(f"Failed to fetch or parse GZipped sitemap: {e} - URL: {url}")
         return []
@@ -157,27 +162,32 @@ def fetch_and_parse_gzip_stream_with_lastmod(url, lastmod, existing_id_date_map,
         response = requests.get(url)
         response.raise_for_status()
         with gzip.GzipFile(fileobj=BytesIO(response.content)) as f:
-            context = ET.iterparse(f, events=("end",))
-            ns = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
-            app_details = []
-            for event, elem in context:
-                if elem.tag == ns + 'url':
-                    loc = elem.find(ns + 'loc')
-                    lastmod_elem = elem.find(ns + 'lastmod')
-                    loc_text = loc.text if loc is not None else None
-                    lastmod_text = lastmod_elem.text if lastmod_elem is not None else lastmod
-                    app_id = extract_app_id_from_url(loc_text) if loc_text else None
-                    if app_id:
-                        add_date = existing_id_date_map.get(app_id, today)
-                        app_details.append({
-                            'id': app_id,
-                            'loc': loc_text,
-                            'lastmodified': lastmod_text,
+            file_content = f.read().decode('utf-8')
+        tree = ET.ElementTree(ET.fromstring(file_content))
+        root = tree.getroot()
+        loc_tags = extract_links_from_xml(root, tag="loc")
+        lastmod_tags = extract_links_from_xml(root, tag="lastmod")
+        app_data_list = [
+            {"url": loc, "lastmodify": lastmod}
+            for loc, lastmod in zip(loc_tags, lastmod_tags)
+        ]
+        print('app_data_list count============',len(app_data_list))
+
+        app_details = []
+        for app in app_data_list:
+            print('!!!!!!!!!',app)
+            app_id = app['url'] if app['url'] else None
+            print('app_id============',app_id)
+            add_date = existing_id_date_map.get(app_id, today)
+            app_details.append({
+                            'id': app['url'].split('/')[-1],
+                            'country': app['url'].split('/')[-4],
+                            'name':app['url'].split('/')[-2],
+                            'lastmodified': app['lastmodify'],
                             'added_date': add_date
                         })
-                elem.clear()
             logging.debug(f"[stream] Extracted {len(app_details)} app details from GZipped sitemap.")
-            return app_details
+        return app_details
     except requests.RequestException as e:
         logging.error(f"Failed to fetch or parse GZipped sitemap: {e} - URL: {url}")
         return []
@@ -225,7 +235,7 @@ def process_sitemaps_and_save_profiles():
     existing_id_detail_map = load_app_details_json(details_file)
     existing_id_date_map = {k: v['added_date'] for k, v in existing_id_detail_map.items()}
     all_app_details = list(existing_id_detail_map.values())
-    for loc_url in loc_urls[:1]:
+    for loc_url in loc_urls:
         print(f'processing sitemap:{loc_url}')
         lastmod = None
         app_details = fetch_and_parse_gzip_stream_with_lastmod(loc_url, lastmod, existing_id_date_map, today)
