@@ -30,7 +30,7 @@ jobs:
       - name: Generate Daily Report
         if: steps.check_progress.outputs.ready == 'true'
         run: |
-          python scripts/parse-url-from-sitemap.py
+          python scripts/parse-apps-from-sitemap.py
       - name: Commit and push data folder
         run: |
           git config --global user.name "github-actions[bot]"
